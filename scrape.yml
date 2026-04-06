@@ -2,16 +2,14 @@ name: 🔍 Virtuoso Price Tracker
 
 on:
   schedule:
-    # Rulează zilnic la ora 08:00 Romania (05:00 UTC)
     - cron: '0 5 * * *'
-  workflow_dispatch: # permite și rulare manuală din interfața GitHub
+  workflow_dispatch:
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
-
     permissions:
-      contents: write   # permite commit-ul înapoi în repo
+      contents: write
 
     steps:
       - name: 📥 Checkout repo
@@ -35,10 +33,23 @@ jobs:
           CHROMIUM_PATH: /usr/bin/chromium-browser
         run: node scraper.js --json --ci
 
+      - name: 📤 Upload debug snapshot (dacă scraping-ul a eșuat)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-snapshot
+          path: |
+            debug-page.html
+            debug-screenshot.png
+          if-no-files-found: ignore
+          retention-days: 3
+
       - name: 📊 Verifică dacă s-au modificat prețurile
         id: check_changes
         run: |
-          if git diff --quiet prices.json; then
+          if [ ! -f prices.json ]; then
+            echo "changed=false" >> $GITHUB_OUTPUT
+          elif git diff --quiet prices.json; then
             echo "changed=false" >> $GITHUB_OUTPUT
           else
             echo "changed=true" >> $GITHUB_OUTPUT
