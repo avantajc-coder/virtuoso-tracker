@@ -1,6 +1,6 @@
 {
   "name": "virtuoso-price-tracker",
-  "version": "2.0.0",
+  "version": "3.0.0",
   "description": "Scraper automat preturi seturi porti Virtuoso.ro",
   "main": "scraper.js",
   "scripts": {
@@ -10,6 +10,8 @@
     "ci":     "node scraper.js --json --ci"
   },
   "dependencies": {
-    "puppeteer-core": "^22.0.0"
+    "puppeteer-core": "^22.0.0",
+    "puppeteer-extra": "^3.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
 }
