@@ -1,12 +1,7 @@
-/**
- * scraper.js — Virtuoso Price Tracker v5
- * Folosește puppeteer-extra + stealth plugin pentru a ocoli Cloudflare.
- */
-
-const puppeteer       = require('puppeteer-extra');
-const StealthPlugin   = require('puppeteer-extra-plugin-stealth');
-const fs              = require('fs');
-const path            = require('path');
+const puppeteer     = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+const fs            = require('fs');
+const path          = require('path');
 
 puppeteer.use(StealthPlugin());
 
@@ -39,50 +34,29 @@ async function scrape() {
     process.env.CHROMIUM_PATH ||
     (process.platform === 'linux' ? '/usr/bin/chromium-browser' : undefined);
 
-  console.log(`🌐 Chromium: ${executablePath || 'auto-detect'}`);
-
   const browser = await puppeteer.launch({
     headless: true,
     executablePath,
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-dev-shm-usage',
-      '--disable-gpu',
-      '--window-size=1440,900',
-    ],
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--window-size=1440,900'],
   });
 
   try {
     const page = await browser.newPage();
-
-    // Setări realiste de browser
     await page.setViewport({ width: 1440, height: 900 });
-    await page.setExtraHTTPHeaders({
-      'Accept-Language': 'ro-RO,ro;q=0.9,en-US;q=0.8,en;q=0.7',
-      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Cache-Control': 'no-cache',
-    });
+    await page.setExtraHTTPHeaders({ 'Accept-Language': 'ro-RO,ro;q=0.9' });
 
     console.log('⏳ Se încarcă pagina…');
     await page.goto(TARGET_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
-    // Așteaptă să treacă de Cloudflare (poate dura 5-10 secunde)
-    console.log('⏳ Așteptăm să treacă verificarea Cloudflare…');
+    // Așteaptă Cloudflare
     await new Promise(r => setTimeout(r, 6000));
-
-    // Verifică titlul — dacă e încă Cloudflare, mai așteptăm
     let title = await page.title();
-    console.log(`   Titlu după 6s: "${title}"`);
-
     if (/one moment|just a moment|checking|cloudflare/i.test(title)) {
-      console.log('   Cloudflare activ, mai așteptăm 10s…');
+      console.log('   Cloudflare activ, mai așteptăm…');
       await new Promise(r => setTimeout(r, 10000));
-      title = await page.title();
-      console.log(`   Titlu după 16s: "${title}"`);
     }
 
-    // Scroll pentru lazy-load
+    // Scroll lazy-load
     await page.evaluate(async () => {
       await new Promise(resolve => {
         let total = 0;
@@ -95,8 +69,7 @@ async function scrape() {
     });
     await new Promise(r => setTimeout(r, 2000));
 
-    // ── Extrage produsele ────────────────────────────────────────────────────
-    const { products, debugInfo } = await page.evaluate(() => {
+    const products = await page.evaluate(() => {
       const parseP = str => {
         if (!str) return null;
         const c = str.replace(/[^\d,.]/g, '').replace(/\.(?=\d{3})/g, '').replace(',', '.');
@@ -104,80 +77,50 @@ async function scrape() {
         return isNaN(n) || n < 100 ? null : n;
       };
 
-      const debugInfo = {
-        title:            document.title,
-        bodyLen:          document.body.innerHTML.length,
-        priceprodold:     document.querySelectorAll('.priceprodold').length,
-        priceprodspecial: document.querySelectorAll('.priceprodspecial').length,
-        priceprodnormal:  document.querySelectorAll('.priceprodnormal').length,
-        pretprod:         document.querySelectorAll('[class*="pretprod"]').length,
-        allClasses: [...new Set(
-          Array.from(document.querySelectorAll('[class*="price"],[class*="pret"],[class*="prod"]'))
-            .flatMap(el => (el.className || '').split(/\s+/))
-            .filter(c => c.length > 2)
-        )].slice(0, 30),
-      };
+      // Containerul principal al fiecărui produs este .product-thumb
+      const items = Array.from(document.querySelectorAll('.product-thumb'));
+      console.log('[eval] .product-thumb găsite:', items.length);
 
-      const results = [];
-      const seenNames = new Set();
+      return items.map(item => {
+        // Titlu — .productname sau primul link cu text
+        const nameEl = item.querySelector('.productname, [class*="productname"], [class*="numeprod"]');
+        const linkEl = item.querySelector('a[href]');
+        const name   = (nameEl?.textContent || linkEl?.getAttribute('title') || linkEl?.textContent || '').trim().replace(/\s+/g, ' ');
+        if (!name) return null;
 
-      // Pornește de la elementele de preț cunoscute
-      const priceSelectors = [
-        '.priceprodspecial',
-        '.priceprodnormal',
-        '.priceprodold',
-        '[class*="priceprod"]',
-        '[class*="pretprod"]',
-      ];
+        const href = linkEl?.href || '';
 
-      let priceEls = [];
-      for (const sel of priceSelectors) {
-        priceEls = Array.from(document.querySelectorAll(sel));
-        if (priceEls.length > 0) break;
-      }
+        // Prețuri
+        // .priceprodold  = preț original (tăiat)
+        // .priceprodspecial = preț redus
+        // .priceprodnormal  = preț fără reducere
+        const oldEl    = item.querySelector('.priceprodold');
+        const saleEl   = item.querySelector('.priceprodspecial');
+        const normEl   = item.querySelector('.priceprodnormal');
 
-      priceEls.forEach(priceEl => {
-        // Urcă prin DOM căutând containerul cu titlu + link
-        let container = priceEl.parentElement;
-        for (let i = 0; i < 12; i++) {
-          if (!container || container === document.body) break;
-          const hasTitle = container.querySelector('h1,h2,h3,h4,h5,a[title],.product-title,[class*="title"],[class*="name"]');
-          const hasLink  = container.querySelector('a[href]');
-          if (hasTitle && hasLink) break;
-          container = container.parentElement;
+        let priceNormal = parseP(oldEl?.textContent);
+        let priceSale   = parseP(saleEl?.textContent);
+
+        // Dacă nu e reducere, priceprodnormal e prețul de bază
+        if (priceNormal == null && priceSale == null) {
+          priceNormal = parseP(normEl?.textContent);
         }
-        if (!container || container === document.body) return;
 
-        const titleEl = container.querySelector('h1,h2,h3,h4,h5,a[title],.product-title,[class*="title"],[class*="name"]');
-        const name = (titleEl?.getAttribute('title') || titleEl?.textContent || '').trim().replace(/\s+/g, ' ');
-        if (!name || seenNames.has(name)) return;
-        seenNames.add(name);
+        if (priceNormal == null && priceSale == null) return null;
 
-        const href = container.querySelector('a[href]')?.href || '';
-        const sku  = (container.querySelector('[class*="reference"],[class*="cod"]')?.textContent || '')
+        const sku = (item.querySelector('[class*="reference"],[class*="cod"]')?.textContent || '')
           .replace(/^(Cod|Ref|SKU)[\s:.]+/i, '').trim();
 
-        const priceNormal = parseP(container.querySelector('.priceprodold')?.textContent);
-        const priceSaleEl = container.querySelector('.priceprodspecial') || container.querySelector('.priceprodnormal');
-        const priceSale   = parseP(priceSaleEl?.textContent);
-
-        if (priceNormal == null && priceSale == null) return;
-
-        results.push({ name, href, sku, priceNormal, priceSale, inStock: true });
-      });
-
-      return { products: results, debugInfo };
+        return { name, href, sku, priceNormal, priceSale, inStock: true };
+      }).filter(Boolean);
     });
 
-    console.log(`\n📊 POST-CLOUDFLARE DEBUG:`);
-    console.log(`   Titlu: ${debugInfo.title}`);
-    console.log(`   Body length: ${debugInfo.bodyLen}`);
-    console.log(`   .priceprodold: ${debugInfo.priceprodold}`);
-    console.log(`   .priceprodspecial: ${debugInfo.priceprodspecial}`);
-    console.log(`   .priceprodnormal: ${debugInfo.priceprodnormal}`);
-    console.log(`   [*pretprod*]: ${debugInfo.pretprod}`);
-    console.log(`   Clase găsite: ${debugInfo.allClasses.join(', ')}`);
-    console.log(`\n✅ Produse extrase: ${products.length}`);
+    console.log(`✅ Produse extrase: ${products.length}`);
+    // Afișează primele 3 pentru verificare
+    products.slice(0, 3).forEach(p => {
+      console.log(`   • ${p.name.substring(0, 60)}`);
+      console.log(`     Normal: ${p.priceNormal}  |  Vânzare: ${p.priceSale}`);
+    });
 
     return products;
 
@@ -208,6 +151,7 @@ function printResults(products, diff) {
   console.log('  💰  VIRTUOSO · Seturi Porți — Prețuri');
   console.log('═'.repeat(70) + '\n');
   if (!products.length) { console.log('  ✗ 0 produse găsite.\n'); return; }
+
   products.forEach(p => {
     const disc = discount(p.priceNormal, p.priceSale);
     console.log(`  📦 ${p.name.substring(0, 65)}`);
@@ -220,8 +164,19 @@ function printResults(products, diff) {
     }
     console.log();
   });
+
+  const onSale    = products.filter(p => discount(p.priceNormal, p.priceSale) !== null);
+  const salePrices= onSale.map(p => p.priceSale).filter(Boolean);
+  const discounts = products.map(p => discount(p.priceNormal, p.priceSale)).filter(Boolean);
+  console.log('─'.repeat(70));
+  console.log(`  Total: ${products.length} produse  |  Cu reducere: ${onSale.length}`);
+  if (salePrices.length) {
+    console.log(`  Preț minim vânzare: ${fmtPrice(Math.min(...salePrices))}`);
+    console.log(`  Reducere maximă:    ${Math.max(...discounts)}%`);
+  }
+
   if (diff?.changed.length || diff?.added.length || diff?.removed.length) {
-    console.log('⚡ MODIFICĂRI:');
+    console.log('\n  ⚡ MODIFICĂRI față de ultima salvare:');
     diff.changed.forEach(d => {
       console.log(`  • ${d.name}`);
       if (d.oldNormal !== d.newNormal) console.log(`    Preț normal:  ${fmtPrice(d.oldNormal)} → ${fmtPrice(d.newNormal)}`);
@@ -229,7 +184,10 @@ function printResults(products, diff) {
     });
     diff.added.forEach(p   => console.log(`  ✚ NOU: ${p.name}`));
     diff.removed.forEach(p => console.log(`  ✖ DISPĂRUT: ${p.name}`));
+  } else if (diff) {
+    console.log('\n  ✓ Nicio modificare față de ultima verificare.');
   }
+  console.log();
 }
 
 function generateReport(products, diff, timestamp) {
@@ -242,7 +200,7 @@ function generateReport(products, diff, timestamp) {
     ``,
   ];
   if (diff?.changed.length || diff?.added.length || diff?.removed.length) {
-    lines.push(`## ⚡ Modificări`);
+    lines.push(`## ⚡ Modificări față de ziua anterioară`);
     diff.changed.forEach(d => {
       lines.push(`### ${d.name}`);
       if (d.oldNormal !== d.newNormal) lines.push(`- Preț normal: ~~${fmtPrice(d.oldNormal)}~~ → **${fmtPrice(d.newNormal)}**`);
@@ -252,7 +210,7 @@ function generateReport(products, diff, timestamp) {
     diff.removed.forEach(p => lines.push(`- ❌ **Dispărut:** ${p.name}`));
     lines.push('');
   } else if (diff) {
-    lines.push(`> ✅ Nicio modificare față de ziua anterioară.\n`);
+    lines.push(`> ✅ Nicio modificare de preț față de ziua anterioară.\n`);
   }
   lines.push(`## 📋 Toate produsele`);
   lines.push(`| Produs | Preț normal | Preț vânzare | Reducere | Stoc |`);
@@ -281,7 +239,10 @@ async function run() {
     const payload = { timestamp, url: TARGET_URL, totalProducts: products.length, products };
     fs.writeFileSync(PRICES_FILE, JSON.stringify(payload, null, 2), 'utf8');
     if (!fs.existsSync(HISTORY_DIR)) fs.mkdirSync(HISTORY_DIR, { recursive: true });
-    fs.writeFileSync(path.join(HISTORY_DIR, `${new Date().toISOString().slice(0,10)}.json`), JSON.stringify(payload, null, 2), 'utf8');
+    fs.writeFileSync(
+      path.join(HISTORY_DIR, `${new Date().toISOString().slice(0,10)}.json`),
+      JSON.stringify(payload, null, 2), 'utf8'
+    );
     fs.writeFileSync(REPORT_FILE, generateReport(products, diff, timestamp), 'utf8');
     console.log(`✓ prices.json și report.md salvate.`);
   }
