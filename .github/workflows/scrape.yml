@@ -33,7 +33,7 @@ jobs:
           CHROMIUM_PATH: /usr/bin/chromium-browser
         run: node scraper.js --json --ci
 
-      - name: 📤 Upload debug snapshot (dacă scraping-ul a eșuat)
+      - name: 📤 Upload debug snapshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -42,9 +42,9 @@ jobs:
             debug-page.html
             debug-screenshot.png
           if-no-files-found: ignore
-          retention-days: 3
+          retention-days: 5
 
-      - name: 📊 Verifică dacă s-au modificat prețurile
+      - name: 📊 Verifică modificări
         id: check_changes
         run: |
           if [ ! -f prices.json ]; then
